@@ -1,8 +1,30 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
+import numpy as np
 
 class Player(object):
-    def __init__(self, obs_shape, action_space, logdir):
+    def __init__(self, obs_shape, action_space, logdir,
+                 buffer_size=500, batch_size=50, learning_rate=0.001,
+                 temp=1.0, stddev=0.1):
+        self.learning_rate = learning_rate
+        self.opt = tf.train.GradientDescentOptimizer(learning_rate)
+        self.old_obs = tf.zeros(shape=[1, 59], dtype=tf.float32)
+
+        self.writer = tf.contrib.summary.create_file_writer(logdir)
+        self.writer.set_as_default()
+
+        self.temp = temp
+        self.stddev = stddev
+
+        self.gamma = 0.9
+
+        self.buffer = []
+        self.buffer_size = buffer_size
+        self.batch_size = batch_size
+
+        self.build()
+
+    def build(self):
         self.policy = tf.keras.Sequential([tf.keras.layers.Dense(16, activation=tf.nn.selu),
                                            tf.keras.layers.Dense(3+5*2)])
 
@@ -17,26 +39,21 @@ class Player(object):
         self.dec = tf.keras.Sequential([tf.keras.layers.Dense(16, activation=tf.nn.selu),
                                         tf.keras.layers.Dense(59)])
 
-        self.opt = tf.train.AdamOptimizer()
-        self.old_obs = tf.zeros(shape=[1, 59], dtype=tf.float32)
-
-
-        self.writer = tf.contrib.summary.create_file_writer(logdir)
-        self.writer.set_as_default()
-
-        self.normal = tfp.distributions.Normal(loc=0.0, scale=1.0)
-        self.temp = 1e-4
-
-        self.buffer = []
-
     def __call__(self, obs, r):
         obs = preprocess(obs)
         r = to_tf(r)
         h = self.enc(obs)
-        a = self.choose_action(h)
+        dis, cts = self.choose_action(h)
+        a = tf.concat([dis.sample(), cts.sample()], axis=1)
 
         self.buffer.append([obs, self.old_obs, r, a])
+        self.update()
         self.old_obs = obs
+
+        with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+            tf.contrib.summary.histogram('a', a)
+            tf.contrib.summary.histogram('state', h)
+            tf.contrib.summary.histogram('obs', obs)
 
         return tf.argmax(a[:, :3], axis=1).numpy().tolist() + a[0, 3:].numpy().tolist()
 
@@ -48,17 +65,14 @@ class Player(object):
         cts_vars = p[:,3:13]
 
         # discrete variables
-        dist = tfp.distributions.RelaxedOneHotCategorical(self.temp, logits=dis_vars)
-        a_dis = dist.sample()
+        gumbel = tfp.distributions.RelaxedOneHotCategorical(self.temp, logits=dis_vars)
 
         # cts variables
         n = 5 # tf.shape()
-        e = tf.random_normal([1, n]) #self.normal.sample([1, n])
-        a_cts = cts_vars[0,:n] + e*(cts_vars[0,n:]**2)
+        normal = tfp.distributions.Normal(loc=cts_vars[:,:n], scale=cts_vars[:,n:]**2)
+        return gumbel, normal
 
-        return tf.concat([a_dis, a_cts], axis=1)
-
-    def step(self, obs_new, obs_old, reward, a):
+    def step(self, obs_new, obs_old, reward, a, policy_loss='meta_loss'):
         # TODO WANT partial evaluation so this can be done online!
         """
         Args:
@@ -70,34 +84,47 @@ class Player(object):
                 shape [batch, 1] dtype tf.float32
             action (tf.tensor): the action taken at t
                 shape [batch, n_outputs] dtype tf.float32
+
+        High level patterns.
+        - Use internal state at t to predict inputs at t+1.
+        - Use the learned v(s, a) to evaluate actions chosen
         """
         with tf.GradientTape() as tape:
+            # TODO want enc to be recurrent and recieve the action taken
             h_old = self.enc(obs_old)
-
             h_new = self.enc(obs_new)
-            a_new = self.choose_action(h_new)
+
+            dis, cts = self.choose_action(h_new)
+            a_dis, a_cts = dis.sample(), cts.sample()
+            a_new = tf.concat([a_dis, a_cts], axis=1)
+
             v_old = self.value(tf.concat([h_old, a], axis=1))
             v_new = self.value(tf.concat([h_new, a_new], axis=1))
 
             y = self.dec(h_old)
 
+            if policy_loss == 'meta_loss':
+                loss_p = tf.reduce_mean(-v_new)
+            else:
+                # policy gradients with learned variance adjustment
+                A = tf.stop_gradient(v_old - reward+self.gamma*v_new)
+                p = tf.concat([tf.reshape(dis.prob(a_dis), [-1, 1]), cts.prob(a_cts)], axis=1)
+                loss_p = tf.reduce_mean(-tf.log(p)*A)
+
             loss_t = tf.losses.mean_squared_error(obs_new, y)
-            loss_p = -v_new
-            loss_v = tf.losses.mean_squared_error(v_old, reward+tf.stop_gradient(v_new))
+            loss_v = tf.losses.mean_squared_error(v_old, reward+self.gamma*tf.stop_gradient(v_new))
 
         with tf.contrib.summary.record_summaries_every_n_global_steps(10):
             tf.contrib.summary.scalar('loss_t', loss_t)
             tf.contrib.summary.scalar('loss_p', loss_p)
             tf.contrib.summary.scalar('loss_v', loss_v)
-            tf.contrib.summary.histogram('a', a_new)
-            tf.contrib.summary.histogram('state', h_old)
-
 
         losses = [loss_t, loss_p, loss_v]
         variables = [self.enc.variables + self.dec.variables,
                      self.enc.variables + self.policy.variables,
                      self.enc.variables + self.value.variables]
 
+        # TODO need to check grad values. do they go through the distributions sampled from
         grads = tape.gradient(losses, variables)
         gnvs = [(tf.clip_by_norm(g, 1.0), v) for G, V in zip(grads, variables) for g, v in zip(G, V)]
         self.opt.apply_gradients(gnvs, global_step=tf.train.get_or_create_global_step())
@@ -117,13 +144,15 @@ class Player(object):
         # intution being to give more weight to high errors
         # just bc loss is large doesnt mean grad of loss is large
 
-        if len(self.buffer) > 0:
-            # TODO add batching to the buffer
+        if len(self.buffer) > self.buffer_size:
             # TODO selectively choose what goes into the buffer?
-            loss = self.step(*self.buffer.pop())
+            inputs = list(sorted(self.buffer, key=lambda x: np.random.random()))[0:self.batch_size]
+            inputs = [tf.concat(val, axis=0) for val in zip(*inputs)]
+            loss = self.step(*inputs)
+            self.buffer = self.buffer[1:]
             print('\rLoss: {}'.format(loss), end='', flush=True)
         else:
-            pass
+            loss = None
 
         return loss
 
@@ -135,8 +164,8 @@ def to_tf(x):
 
 if __name__ == '__main__':
     tf.enable_eager_execution()
-    player = Player(0,1, '/tmp/test')
-    observation = [0]*59
-    action = player(observation, 1.0)
-    print(action)
-    loss = player.update()
+    player = Player(0,1, '/tmp/test', buffer_size=100)
+    for i in range(200):
+        observation = [1.0]*59
+        action = player(observation, 1.0)
+        print('A:{}'.format(action))

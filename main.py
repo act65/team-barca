@@ -30,14 +30,14 @@ def main(args):
 
         while not done:
             action = player(observation, reward)
+            # action = env.action_space.sample()
             observation, reward, done, info = env.step(action)
-            player.update()
 
             counter += 1
             R[i] += reward
         print('\rR: {}'.format(R), end='', flush=True)
-        with tf.contrib.summary.record_summaries_every_n_global_steps(1):
-            tf.contrib.summary.scalar('R', R[i])
+        # with tf.contrib.summary.record_summaries_every_n_global_steps(1):
+        #     tf.contrib.summary.scalar('R', R[i])
 
 if __name__ == '__main__':
     main(argumentparser())

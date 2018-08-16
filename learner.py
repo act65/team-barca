@@ -117,18 +117,22 @@ class Player(object):
             v_old = self.value(tf.concat([h_old, a], axis=1))
             v_new = self.value(tf.concat([h_new, a_new], axis=1))
 
-            y = self.dec(tf.concat([h_old, a], axis=1))
+            # TODO could predict in feature space or input space!? 
+            obs_new_approx = self.dec(tf.concat([h_old, a], axis=1))
 
+            loss_t = tf.losses.mean_squared_error(obs_new, obs_new_approx)
+            loss_v = tf.losses.mean_squared_error(v_old, reward+self.gamma*tf.stop_gradient(v_new))
+            
             if policy_loss == 'approx_loss':
                 loss_p = tf.reduce_mean(-v_new)
             else:
                 # policy gradients with learned variance adjustment
-                A = tf.stop_gradient(v_old - reward+self.gamma*v_new)
+                A = 1+tf.stop_gradient(v_old - reward+self.gamma*v_new)
                 p = tf.concat([tf.reshape(dis.prob(a_dis), [-1, 1]), cts.prob(a_cts)], axis=1)
                 loss_p = tf.reduce_mean(-tf.log(p)*A)
-
-            loss_t = tf.losses.mean_squared_error(obs_new, y)
-            loss_v = tf.losses.mean_squared_error(v_old, reward+self.gamma*tf.stop_gradient(v_new))
+                
+            # exploration term
+            loss_p -= loss_t  # want to pick actions that we cannot currently accurately predict, surprising ones
 
         with tf.contrib.summary.record_summaries_every_n_global_steps(10):
             tf.contrib.summary.scalar('loss_t', loss_t)

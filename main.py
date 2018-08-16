@@ -15,8 +15,9 @@ def argumentparser():
                         help='number of trials')
     parser.add_argument('--logdir', type=str, default='/tmp/test/',
                         help='location to save logs')
+    parser.add_argument('--task', type=str, default='SoccerEmptyGoal-v0',
+                        choices=['Soccer-v0', 'SoccerEmptyGoal-v0', 'SoccerAgainstKeeper-v0'])
     return parser.parse_args()
-
 
 def main(args):
     player = learner.Player(0,1, args.logdir)
@@ -36,8 +37,8 @@ def main(args):
             counter += 1
             R[i] += reward
         print('\rR: {}'.format(R), end='', flush=True)
-        # with tf.contrib.summary.record_summaries_every_n_global_steps(1):
-        #     tf.contrib.summary.scalar('R', R[i])
+        with tf.contrib.summary.record_summaries_every_n_global_steps(1):
+            tf.contrib.summary.scalar('R', R[i])
 
 if __name__ == '__main__':
     main(argumentparser())

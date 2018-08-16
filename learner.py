@@ -123,6 +123,10 @@ class Player(object):
             loss_t = tf.losses.mean_squared_error(obs_new, obs_new_approx)
             loss_v = tf.losses.mean_squared_error(v_old, reward+self.gamma*tf.stop_gradient(v_new))
             
+            # exploration term
+            # want to pick actions that we cannot currently accurately predict, surprising ones
+            loss_e = -loss_t
+            
             if policy_loss == 'approx_loss':
                 loss_p = tf.reduce_mean(-v_new)
             else:
@@ -130,19 +134,17 @@ class Player(object):
                 A = 1+tf.stop_gradient(v_old - reward+self.gamma*v_new)
                 p = tf.concat([tf.reshape(dis.prob(a_dis), [-1, 1]), cts.prob(a_cts)], axis=1)
                 loss_p = tf.reduce_mean(-tf.log(p)*A)
-                
-            # exploration term
-            loss_p -= loss_t  # want to pick actions that we cannot currently accurately predict, surprising ones
 
         with tf.contrib.summary.record_summaries_every_n_global_steps(10):
             tf.contrib.summary.scalar('loss_t', loss_t)
             tf.contrib.summary.scalar('loss_p', loss_p)
             tf.contrib.summary.scalar('loss_v', loss_v)
 
-        losses = [loss_t, loss_p, loss_v]
+        losses = [loss_t, loss_p, loss_v, loss_e]
         variables = [self.enc.variables + self.dec.variables,
                      self.enc.variables + self.policy.variables,
-                     self.enc.variables + self.value.variables]
+                     self.enc.variables + self.value.variables,
+                     self.policy.variables]
 
         grads = tape.gradient(losses, variables)
         gnvs = [(tf.clip_by_norm(g, 1.0), v) for G, V in zip(grads, variables) for g, v in zip(G, V)]

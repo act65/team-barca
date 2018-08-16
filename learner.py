@@ -3,11 +3,15 @@ import tensorflow_probability as tfp
 import numpy as np
 
 class Player(object):
+    # TODO disentangle soccer and learner
+    # want class Player(A3C): ...
     def __init__(self, obs_shape, action_space, logdir,
-                 buffer_size=500, batch_size=50, learning_rate=0.001,
+                 buffer_size=500, batch_size=50, learning_rate=0.0001,
                  temp=1.0, stddev=0.1):
+        self.action_space = action_space
+
         self.learning_rate = learning_rate
-        self.opt = tf.train.GradientDescentOptimizer(learning_rate)
+        self.opt = tf.train.AdamOptimizer(learning_rate)
         self.old_obs = tf.zeros(shape=[1, 59], dtype=tf.float32)
 
         self.writer = tf.contrib.summary.create_file_writer(logdir)
@@ -58,11 +62,21 @@ class Player(object):
         return tf.argmax(a[:, :3], axis=1).numpy().tolist() + a[0, 3:].numpy().tolist()
 
     def choose_action(self, state):
+        """
+        Args:
+            state (tf.tensor): the hidden state at t
+                shape [batch, n_hidden] dtype tf.float32
+
+        Returns:
+            gumbel (tfp.distribution): the distribution over discrete variables
+            normal (tfp.distribution): the distribution over cts variables
+        """
+        # TODO make more general for some input spec
+        # TODO add exploration
         p = self.policy(state)
 
-        # TODO make more general for some input spec
-        dis_vars = p[:,0:3]
-        cts_vars = p[:,3:13]
+        dis_vars = p[:,:3]
+        cts_vars = p[:,3:]
 
         # discrete variables
         gumbel = tfp.distributions.RelaxedOneHotCategorical(self.temp, logits=dis_vars)
@@ -72,8 +86,10 @@ class Player(object):
         normal = tfp.distributions.Normal(loc=cts_vars[:,:n], scale=cts_vars[:,n:]**2)
         return gumbel, normal
 
-    def step(self, obs_new, obs_old, reward, a, policy_loss='meta_loss'):
+    def step(self, obs_new, obs_old, reward, a, policy_loss='approx_loss'):
         # TODO WANT partial evaluation so this can be done online!
+        # problem with offline learning is that there is a delay between
+        # being able to adapt to a change
         """
         Args:
             obs_new (tf.tensor): input from t+1.
@@ -101,9 +117,9 @@ class Player(object):
             v_old = self.value(tf.concat([h_old, a], axis=1))
             v_new = self.value(tf.concat([h_new, a_new], axis=1))
 
-            y = self.dec(h_old)
+            y = self.dec(tf.concat([h_old, a], axis=1))
 
-            if policy_loss == 'meta_loss':
+            if policy_loss == 'approx_loss':
                 loss_p = tf.reduce_mean(-v_new)
             else:
                 # policy gradients with learned variance adjustment
@@ -124,7 +140,6 @@ class Player(object):
                      self.enc.variables + self.policy.variables,
                      self.enc.variables + self.value.variables]
 
-        # TODO need to check grad values. do they go through the distributions sampled from
         grads = tape.gradient(losses, variables)
         gnvs = [(tf.clip_by_norm(g, 1.0), v) for G, V in zip(grads, variables) for g, v in zip(G, V)]
         self.opt.apply_gradients(gnvs, global_step=tf.train.get_or_create_global_step())
@@ -134,12 +149,6 @@ class Player(object):
     def update(self):
         # TODO reward curiosity
         # TODO model based learning
-        # TODO want to take this offline on a separate process!??
-
-        # TODO enc gets applied multiple times. want to partially evaluate!?!
-        # or merge into a signle fn...
-
-
         # TODO keep a moving avg of the loss normalise the learning rate by it
         # intution being to give more weight to high errors
         # just bc loss is large doesnt mean grad of loss is large

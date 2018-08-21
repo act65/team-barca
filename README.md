@@ -7,3 +7,8 @@ Goals: solve
 - Online learning
 - Mutli agent RL (collaboration and compeititon)
 - Curiosity
+
+Software tools
+
+- Evaluation
+- Distributed computation

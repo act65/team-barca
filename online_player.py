@@ -146,6 +146,8 @@ class OnlinePlayer(RecurrentLearner):
         # TODO use RNN/DNC for enc. PROBLEM how is training going to work!?
         # will have to set a threshold on the depth?!
         # how will this work with the batching? it wont currently...
+        # HOW CAN YOU LEARN long time scales?
+        # Real time recurrent learning? forward AD!?
         self.encoder = tf.keras.Sequential([
             tf.keras.layers.Dense(width, activation=tf.nn.selu,
                                   input_shape=(n_obs + 8 + 1,),

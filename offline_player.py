@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 import utils
 
 class ActorCritic(object):
@@ -130,7 +131,7 @@ class ActorCritic(object):
         # NOTE not sure it makes sense to train the same fn on both loss_p_explore
         # and loss_p_exploit???
 
-        # # A3C: policy gradients with learned variance adjustment
+        # # Advantage actor critic: policy gradients with learned variance adjustment
         # A = 1+tf.stop_gradient(v_old - reward+self.discount*v)
         # p = tf.concat([tf.reshape(dis.prob(a_dis), [-1, 1]), cts.prob(a_cts)], axis=1)
         # loss_a = tf.reduce_mean(-tf.log(p)*A)
@@ -160,11 +161,10 @@ class ActorCritic(object):
             tf.contrib.summary.scalar('loss_p_exploit', loss_p_exploit)
             tf.contrib.summary.scalar('loss_p_explore', loss_p_explore)
 
-
         # losses and variables
         lnvs = [(loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
                 (loss_v, self.encoder.variables + self.value.variables),  # the value fn
-                # (loss_p_explore, self.policy.variables),  # the policy fn
+                (loss_p_explore, self.policy.variables),  # the policy fn
                 (loss_p_exploit, self.policy.variables)  # the policy fn,
                 ]
 
@@ -200,8 +200,9 @@ class ActorCritic(object):
 
         if len(self.buffer) > self.buffer_size:
             # TODO selectively choose what goes into the buffer?
-            inputs = list(sorted(self.buffer, key=lambda x: np.random.random()))
-            batch = inputs[0:self.batch_size]
+            preference = lambda x: x[-1]*np.random.random()
+            inputs = list(sorted(self.buffer, key=preference))
+            batch = inputs[-self.batch_size+10:] + self.buffer[-10:]  # take the most recent and some random others
             batch = [tf.concat(val, axis=0) for val in zip(*batch)]
             loss = self.train_step(batch)
             self.buffer = self.buffer[1:]

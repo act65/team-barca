@@ -1,9 +1,8 @@
 import tensorflow as tf
-import numpy as np
 import utils
 
 class ActorCritic(object):
-    def __init__(self, input_specs, action_space, n_hidden=32, logdir='/tmp/test/0',
+    def __init__(self, n_hidden=32, logdir='/tmp/test/0',
                  buffer_size=1000, batch_size=100, learning_rate=0.0001,
                  temp=100.0, discount=0.9):
         """
@@ -17,9 +16,6 @@ class ActorCritic(object):
         """
         # TODO reward compression
         # TODO model based planning!?!
-
-        self.action_space = action_space
-
         self.learning_rate = learning_rate
         self.opt = tf.train.AdamOptimizer(learning_rate)
 
@@ -37,7 +33,8 @@ class ActorCritic(object):
         self.buffer_size = buffer_size
         self.batch_size = batch_size
 
-    def step(self, obs, reward):
+    @utils.observation_and_action_space
+    def __call__(self, obs, reward):
         """
         Step. Given a new observation and reward choose and action and add the
         latest episode to the buffer.
@@ -53,7 +50,7 @@ class ActorCritic(object):
 
         # NOTE implemented by child class. action space will be specific to
         # the problem
-        action = self.choose_action(self.policy(h), self.temp)
+        action = utils.choose_action(self.policy(h), self.temp)
 
         if self.old_obs is None:
             self.old_obs = obs
@@ -213,3 +210,45 @@ class ActorCritic(object):
             loss = None
 
         return loss
+
+class OfflinePlayer(ActorCritic):
+    def __init__(self, *args, **kwargs):
+        """
+        A football player. Designed for HFO.
+        """
+        super(self.__class__, self).__init__(*args, **kwargs)
+        self.build(n_obs=59, n_actions=13, n_hidden=32)
+
+    def build(self, n_obs, n_actions, n_hidden, width=32):
+        self.n_obs = n_obs
+        self.n_actions = n_actions
+        self.n_hidden = n_hidden
+
+        self.policy = tf.keras.Sequential([tf.keras.layers.Dense(width, activation=tf.nn.selu),
+                                           tf.keras.layers.Dense(n_actions)], name='policy')
+
+        self.value = tf.keras.Sequential([tf.keras.layers.Dense(width, activation=tf.nn.selu),
+                                          tf.keras.layers.Dense(1)], name='value')
+
+        # TODO use RNN/DNC for enc. PROBLEM how is training going to work!?
+        # will have to set a threshold on the depth?!
+        # how will this work with the batching? it wont currently...
+        self.encoder = tf.keras.Sequential([
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(n_hidden)
+        ], name='encoder')
+
+        self.trans = tf.keras.Sequential([
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(n_obs + 8 + 1)],
+        name='trans')
+
+if __name__ == '__main__':
+    tf.enable_eager_execution()
+    player = Player(0,1, buffer_size=100, batch_size=10, logdir='/tmp/test2/0')
+    for i in range(200):
+        observation = [1.0]*59
+        action = player(observation, 1.0)
+        print('A:{}'.format(action))

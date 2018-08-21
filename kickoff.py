@@ -2,7 +2,8 @@ import gym
 import gym_soccer
 
 import numpy as np
-import player
+import offline_player
+import online_player
 
 import tensorflow as tf
 tf.enable_eager_execution()
@@ -17,11 +18,21 @@ def argumentparser():
                         help='location to save logs')
     parser.add_argument('--task', type=str, default='SoccerEmptyGoal-v0',
                         choices=['Soccer-v0', 'SoccerEmptyGoal-v0', 'SoccerAgainstKeeper-v0'])
+    parser.add_argument('--player', type=str, default='Online',
+                        choices=['Offline', 'Online'])
     return parser.parse_args()
 
+def get_player(args):
+    if args.player == 'Offline':
+        return offline_player.OfflinePlayer(logdir=args.logdir)
+    elif args.player == 'Online':
+        return online_player.OnlinePlayer(logdir=args.logdir)
+    else:
+        raise ValueError('Please use player in [Offline, Online]')
+
 def main(args):
-    agent = player.Player(0,1, logdir=args.logdir)
-    env = gym.make('SoccerEmptyGoal-v0')
+    player = get_player(args)
+    env = gym.make(args.task)
 
     R = [0] * args.trials
     for i in range(args.trials):
@@ -30,7 +41,7 @@ def main(args):
         counter = 0
 
         while not done:
-            action = agent(observation, reward)
+            action = player(observation, reward)
             # action = env.action_space.sample()
             observation, reward, done, info = env.step(action)
 

@@ -47,6 +47,7 @@ def choose_action(logits, temp):
         normal (tfp.distribution): the distribution over cts variables
     """
     # TODO add a way to combine exploration and exploitation!?
+    logits = tf.clip_by_norm(logits, 100.0)
 
     dis_vars = logits[:,:3]
     cts_vars = logits[:,3:]

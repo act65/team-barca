@@ -23,6 +23,7 @@ class ActorCritic(object):
         self.old_obs = None
         self.old_reward = None
         self.old_action = tf.zeros([1, 8])
+        self.older_action = tf.zeros([1, 8])
 
         self.writer = tf.contrib.summary.create_file_writer(logdir)
         self.writer.set_as_default()
@@ -34,8 +35,7 @@ class ActorCritic(object):
         self.buffer_size = buffer_size
         self.batch_size = batch_size
 
-    @utils.observation_and_action_space
-    def __call__(self, obs, reward):
+    def step(self, obs, reward):
         """
         Step. Given a new observation and reward choose and action and add the
         latest episode to the buffer.
@@ -53,19 +53,14 @@ class ActorCritic(object):
         # the problem
         action = utils.choose_action(self.policy(h), self.temp)
 
-        if self.old_obs is None:
-            self.old_obs = obs
-            self.old_reward = reward
-            self.old_action = action
-
-        self.buffer.append([self.old_obs, self.old_reward, self.old_action, obs, action, reward])
-
-        self.offline_update()
+        if self.old_obs is not None:
+            self.buffer.append([self.older_action, self.old_obs, self.old_reward, self.old_action, obs, reward])
 
         # loop the values around for next time. could fetch from the buffer instead...
         self.old_obs = obs
         self.old_reward = reward
         self.old_action = action
+        self.older_action = self.old_action
 
         with tf.contrib.summary.record_summaries_every_n_global_steps(10):
             tf.contrib.summary.histogram('a', action)
@@ -74,7 +69,7 @@ class ActorCritic(object):
 
         return action
 
-    def get_losses(self, old_obs, old_reward, old_action, obs, action, reward):
+    def get_losses(self, older_action, old_obs, old_reward, old_action, obs, reward):
         """
         Can be used with/wo eager.
 
@@ -100,7 +95,7 @@ class ActorCritic(object):
 
         # TODO want enc to be recurrent and recieve;
         # the old action taken and the old reward recieved
-        x_old = tf.concat([old_obs, old_reward, old_action], axis=1)
+        x_old = tf.concat([old_obs, old_reward, older_action], axis=1)
         h_old = self.encoder(x_old)
         x = tf.concat([obs, reward, old_action], axis=1)
         h = self.encoder(x)
@@ -151,6 +146,8 @@ class ActorCritic(object):
         # problem with offline learning is that there is a delay between
         # being able to adapt to a change
 
+        global_step = tf.train.get_or_create_global_step()
+
         # TODO implement a version of this with tf.Session()!?
         with tf.GradientTape() as tape:
             loss_t, loss_v, loss_p_exploit, loss_p_explore = self.get_losses(*episode)
@@ -162,10 +159,10 @@ class ActorCritic(object):
             tf.contrib.summary.scalar('loss_p_explore', loss_p_explore)
 
         # losses and variables
+        loss_p = loss_p_explore if global_step < 5000 else loss_p_exploit
         lnvs = [(loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
                 (loss_v, self.encoder.variables + self.value.variables),  # the value fn
-                (loss_p_explore, self.policy.variables),  # the policy fn
-                (loss_p_exploit, self.policy.variables)  # the policy fn,
+                (loss_p, self.policy.variables)  # the policy fn
                 ]
 
         grads = tape.gradient(*zip(*lnvs))
@@ -181,7 +178,7 @@ class ActorCritic(object):
             for g, v in gnvs:
                 tf.contrib.summary.scalar('grads/{}'.format(v.name), tf.norm(g))
 
-        self.opt.apply_gradients(gnvs, global_step=tf.train.get_or_create_global_step())
+        self.opt.apply_gradients(gnvs, global_step=global_step)
 
         return loss_t  + loss_v + loss_p_exploit + loss_p_explore
 
@@ -200,8 +197,10 @@ class ActorCritic(object):
 
         if len(self.buffer) > self.buffer_size:
             # TODO selectively choose what goes into the buffer?
-            preference = lambda x: x[-1]*np.random.random()
-            inputs = list(sorted(self.buffer, key=preference))
+            def order(x):
+                return x[-1].numpy()*np.random.random()
+
+            inputs = list(sorted(self.buffer, key=order))
             batch = inputs[-self.batch_size+10:] + self.buffer[-10:]  # take the most recent and some random others
             batch = [tf.concat(val, axis=0) for val in zip(*batch)]
             loss = self.train_step(batch)
@@ -246,9 +245,15 @@ class OfflinePlayer(ActorCritic):
             tf.keras.layers.Dense(n_obs + 8 + 1)],
         name='trans')
 
+    @utils.observation_and_action_space
+    def __call__(self, obs, r):
+        action = self.step(obs, r)
+        self.offline_update()
+        return action
+
 if __name__ == '__main__':
     tf.enable_eager_execution()
-    player = Player(0,1, buffer_size=100, batch_size=10, logdir='/tmp/test2/0')
+    player = OfflinePlayer(buffer_size=100, batch_size=10, logdir='/tmp/test2/0')
     for i in range(200):
         observation = [1.0]*59
         action = player(observation, 1.0)

@@ -2,7 +2,7 @@ import gym
 import gym_soccer
 
 import numpy as np
-import learner
+import player
 
 import tensorflow as tf
 tf.enable_eager_execution()
@@ -20,7 +20,7 @@ def argumentparser():
     return parser.parse_args()
 
 def main(args):
-    player = learner.Player(0,1, args.logdir)
+    agent = player.Player(0,1, logdir=args.logdir)
     env = gym.make('SoccerEmptyGoal-v0')
 
     R = [0] * args.trials
@@ -30,7 +30,7 @@ def main(args):
         counter = 0
 
         while not done:
-            action = player(observation, reward)
+            action = agent(observation, reward)
             # action = env.action_space.sample()
             observation, reward, done, info = env.step(action)
 

@@ -17,7 +17,7 @@ def argumentparser():
     parser.add_argument('--logdir', type=str, default='/tmp/test/',
                         help='location to save logs')
     parser.add_argument('--task', type=str, default='SoccerEmptyGoal-v0',
-                        choices=['Soccer-v0', 'SoccerEmptyGoal-v0', 'SoccerAgainstKeeper-v0'])
+                        choices=['Soccer-v0', 'SoccerEmptyGoal-v0', 'SoccerAgainstKeeper-v0', 'SoccerMatch-v0'])
     parser.add_argument('--player', type=str, default='Online',
                         choices=['Offline', 'Online'])
     return parser.parse_args()
@@ -44,6 +44,7 @@ def main(args):
             action = player(observation, reward)
             # action = env.action_space.sample()
             observation, reward, done, info = env.step(action)
+
 
             counter += 1
             R[i] += reward

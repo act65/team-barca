@@ -8,6 +8,8 @@ Goals: solve
 - Mutli agent RL (collaboration and compeititon)
 - Curiosity
 
+Hmm, modelling other minds. How is that going to fit in!?
+
 Software tools
 
 - Evaluation

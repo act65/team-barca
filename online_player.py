@@ -9,7 +9,7 @@ class RecurrentLearner(object):
     # problem is how to carry dependencies across calls to tf
     # want to learn long range temporal dependencies
     def __init__(self, n_hidden=32, logdir='/tmp/test/0',
-                 learning_rate=0.00001, temp=100.0, discount=0.9):
+                 learning_rate=0.0001, temp=100.0, discount=0.9):
         """
         Parent class for learners.
         Children need to implement;
@@ -121,7 +121,7 @@ class OnlinePlayer(RecurrentLearner):
         A football player. Designed for HFO.
         """
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.build(n_obs=59, n_actions=13, n_hidden=32)
+        self.build(n_obs=104, n_actions=13, n_hidden=32)
 
     def build(self, n_obs, n_actions, n_hidden, width=32):
         self.n_obs = n_obs

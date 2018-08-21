@@ -112,15 +112,17 @@ class ActorCritic(object):
         v = self.value(tf.concat([h, a_new], axis=1))
 
         # predict inputs at t+1 given action taken
-        y = self.trans(tf.concat([h_old, a], axis=1))
+        y = self.decoder(tf.concat([h_old, a], axis=1))
+        h_approx = self.trans(tf.concat([h_old, a], axis=1))
 
-        loss_t = tf.losses.mean_squared_error(x, y)
+        loss_d = tf.losses.mean_squared_error(x, y)
+        loss_t = tf.losses.mean_squared_error(tf.stop_gradient(h), h_approx)
         loss_v = tf.losses.mean_squared_error(v_old, reward+self.discount*tf.stop_gradient(v))
 
-        # maximise reward: use the appxoimated reward as supervision
+        # maximise reward: use the approximated q/expected reward as supervision
         loss_p_exploit = -tf.reduce_mean(v)
-        # explore: do things that result in unpredictable inputs
-        loss_p_explore = - loss_t - loss_v
+        # explore: do things that result in unpredictable outcomes
+        loss_p_explore = - loss_d - loss_t - loss_v
         # NOTE no gradients propagate back throughthe policy to the enc.
         # good or bad? good. the losses are just the inverses so good?
         # NOTE not sure it makes sense to train the same fn on both loss_p_explore
@@ -131,7 +133,7 @@ class ActorCritic(object):
         # p = tf.concat([tf.reshape(dis.prob(a_dis), [-1, 1]), cts.prob(a_cts)], axis=1)
         # loss_a = tf.reduce_mean(-tf.log(p)*A)
 
-        return loss_t, loss_v, loss_p_exploit, loss_p_explore
+        return loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore
 
     def train_step(self, episode):
         """
@@ -150,17 +152,19 @@ class ActorCritic(object):
 
         # TODO implement a version of this with tf.Session()!?
         with tf.GradientTape() as tape:
-            loss_t, loss_v, loss_p_exploit, loss_p_explore = self.get_losses(*episode)
+            loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore = self.get_losses(*episode)
 
         with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+            tf.contrib.summary.scalar('loss_d', loss_d)
             tf.contrib.summary.scalar('loss_t', loss_t)
             tf.contrib.summary.scalar('loss_v', loss_v)
             tf.contrib.summary.scalar('loss_p_exploit', loss_p_exploit)
             tf.contrib.summary.scalar('loss_p_explore', loss_p_explore)
 
         # losses and variables
-        loss_p = loss_p_explore if global_step < 5000 else loss_p_exploit
-        lnvs = [(loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
+        loss_p = loss_p_explore # if global_step < 5000 else loss_p_exploit
+        lnvs = [(loss_d, self.encoder.variables + self.decoder.variables),  # the decoder fn
+                (loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
                 (loss_v, self.encoder.variables + self.value.variables),  # the value fn
                 (loss_p, self.policy.variables)  # the policy fn
                 ]
@@ -217,9 +221,9 @@ class OfflinePlayer(ActorCritic):
         A football player. Designed for HFO.
         """
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.build(n_obs=59, n_actions=13, n_hidden=32)
+        self.build(n_obs=104, n_actions=13, n_hidden=32)
 
-    def build(self, n_obs, n_actions, n_hidden, width=32):
+    def build(self, n_obs, n_actions, n_hidden, width=64):
         self.n_obs = n_obs
         self.n_actions = n_actions
         self.n_hidden = n_hidden
@@ -240,9 +244,14 @@ class OfflinePlayer(ActorCritic):
             tf.keras.layers.Dense(n_hidden)
         ], name='encoder')
 
-        self.trans = tf.keras.Sequential([
+        self.decoder = tf.keras.Sequential([
             tf.keras.layers.Dense(width, activation=tf.nn.selu),
             tf.keras.layers.Dense(n_obs + 8 + 1)],
+        name='decoder')
+
+        self.trans = tf.keras.Sequential([
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(n_hidden)],
         name='trans')
 
     @utils.observation_and_action_space
@@ -255,6 +264,6 @@ if __name__ == '__main__':
     tf.enable_eager_execution()
     player = OfflinePlayer(buffer_size=100, batch_size=10, logdir='/tmp/test2/0')
     for i in range(200):
-        observation = [1.0]*59
+        observation = [1.0]*104
         action = player(observation, 1.0)
         print('A:{}'.format(action))

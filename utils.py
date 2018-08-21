@@ -26,9 +26,9 @@ def observation_and_action_space(fn):
 
 def preprocess_obs(obs):
     """
-    list -> tf.tensor [1, 59]
+    list -> tf.tensor [1, 59/104]
     """
-    return tf.cast(tf.reshape(tf.stack(obs, axis=0), [1, 59]), tf.float32)
+    return tf.cast(tf.reshape(tf.stack(obs, axis=0), [1, -1]), tf.float32)
 
 def preprocess_r(x):
     """

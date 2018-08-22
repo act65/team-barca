@@ -4,7 +4,7 @@ import utils
 
 class ActorCritic(object):
     def __init__(self, n_hidden=32, logdir='/tmp/test/0',
-                 buffer_size=1000, batch_size=100, learning_rate=0.0001,
+                 buffer_size=2000, batch_size=128, learning_rate=0.0001,
                  temp=100.0, discount=0.9):
         """
         Parent class for learners.
@@ -112,10 +112,10 @@ class ActorCritic(object):
         v = self.value(tf.concat([h, a_new], axis=1))
 
         # predict inputs at t+1 given action taken
-        y = self.decoder(tf.concat([h_old, a], axis=1))
+        obs_approx = self.decoder(tf.concat([h_old, a], axis=1))
         h_approx = self.trans(tf.concat([h_old, a], axis=1))
 
-        loss_d = tf.losses.mean_squared_error(x, y)
+        loss_d = tf.losses.mean_squared_error(obs, obs_approx)
         loss_t = tf.losses.mean_squared_error(tf.stop_gradient(h), h_approx)
         loss_v = tf.losses.mean_squared_error(v_old, reward+self.discount*tf.stop_gradient(v))
 
@@ -162,7 +162,7 @@ class ActorCritic(object):
             tf.contrib.summary.scalar('loss_p_explore', loss_p_explore)
 
         # losses and variables
-        loss_p = loss_p_explore # if global_step < 5000 else loss_p_exploit
+        loss_p = loss_p_exploit # loss_p_explore if global_step < 5000 else loss_p_exploit
         lnvs = [(loss_d, self.encoder.variables + self.decoder.variables),  # the decoder fn
                 (loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
                 (loss_v, self.encoder.variables + self.value.variables),  # the value fn
@@ -199,10 +199,10 @@ class ActorCritic(object):
         # TODO want to learn a controller that meta learns to select/keep episodes?
         # brains (must) have the ability to segment histories into meaningful segments!?
 
-        if len(self.buffer) > self.buffer_size:
+        if len(self.buffer) > self.batch_size:
             # TODO selectively choose what goes into the buffer?
             def order(x):
-                return x[-1].numpy()*np.random.random()
+                return x[-1].numpy()*np.random.random() + np.random.standard_normal()
 
             inputs = list(sorted(self.buffer, key=order))
             batch = inputs[-self.batch_size+10:] + self.buffer[-10:]  # take the most recent and some random others
@@ -221,7 +221,7 @@ class OfflinePlayer(ActorCritic):
         A football player. Designed for HFO.
         """
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.build(n_obs=104, n_actions=13, n_hidden=32)
+        self.build(n_obs=59, n_actions=13, n_hidden=32)
 
     def build(self, n_obs, n_actions, n_hidden, width=64):
         self.n_obs = n_obs
@@ -246,7 +246,7 @@ class OfflinePlayer(ActorCritic):
 
         self.decoder = tf.keras.Sequential([
             tf.keras.layers.Dense(width, activation=tf.nn.selu),
-            tf.keras.layers.Dense(n_obs + 8 + 1)],
+            tf.keras.layers.Dense(n_obs)],
         name='decoder')
 
         self.trans = tf.keras.Sequential([

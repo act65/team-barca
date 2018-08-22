@@ -37,7 +37,7 @@ class RecurrentLearner(object):
 
         self.batch_size = 1
 
-    def get_losses(self, state, older_action, old_obs, old_reward, old_action, obs, reward, action):
+    def get_losses(self, h, older_action, old_obs, old_reward, old_action, obs, reward, action):
         """
         Can be used with/wo eager.
 
@@ -61,41 +61,44 @@ class RecurrentLearner(object):
         """
         x_old = tf.concat([old_obs, old_reward, older_action], axis=1)
         h_old = self.encoder(x_old)
-        x = tf.concat([obs, reward, old_action], axis=1)
 
         # need differentiable actions.
         a_old = utils.choose_action(self.policy(h_old), self.temp)  # it bugs me that I need to recompute this
-        # NOTE PROBLEM. old_action is not differentiable so need to recalc
+        # HACK old_action is not differentiable so need to recalc
         # but action is!
+        v = self.value(tf.concat([h, action], axis=1))
 
-        v_old = self.value(tf.concat([h_old, a_old], axis=1))
-        v = self.value(tf.concat([state, action], axis=1))
-
+        # OPTIMIZE implementation here. could write as simply predicting inputs!?
         # predict inputs at t+1 given action taken
-        y = self.trans(tf.concat([h_old, a_old], axis=1))
+        obs_approx = self.decoder(tf.concat([h_old, a_old], axis=1))
+        h_approx = self.trans(tf.concat([h_old, a_old], axis=1))
+        v_approx = self.value(tf.concat([h_old, a_old], axis=1))
 
-        loss_t = tf.losses.mean_squared_error(x, y)
-        loss_v = tf.losses.mean_squared_error(v_old, reward+self.discount*tf.stop_gradient(v))
+        loss_d = tf.losses.mean_squared_error(obs, obs_approx)
+        loss_t = tf.losses.mean_squared_error(tf.stop_gradient(h), h_approx)
+        loss_v = tf.losses.mean_squared_error(v_approx, reward+self.discount*tf.stop_gradient(v))
 
         # maximise reward: use the appxoimated reward as supervision
         loss_p_exploit = -tf.reduce_mean(v)
         # explore: do things that result in unpredictable inputs
-        loss_p_explore = - loss_t - loss_v
+        loss_p_explore = - loss_d - loss_t - loss_v
 
-        return loss_t, loss_v, loss_p_exploit, loss_p_explore
+        return loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore
 
-    def train_step(self, tape, loss_t, loss_v, loss_p_exploit, loss_p_explore):
+    def train_step(self, tape, loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore):
         """
         A training step for online learning.
         """
         with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+            tf.contrib.summary.scalar('loss_d', loss_d)
             tf.contrib.summary.scalar('loss_t', loss_t)
             tf.contrib.summary.scalar('loss_v', loss_v)
             tf.contrib.summary.scalar('loss_p_exploit', loss_p_exploit)
             tf.contrib.summary.scalar('loss_p_explore', loss_p_explore)
 
         # losses and variables
-        lnvs = [(loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
+        lnvs = [(loss_d, self.encoder.variables + self.decoder.variables),  # the decoder fn
+                (loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
                 (loss_v, self.encoder.variables + self.value.variables),  # the value fn
                 (loss_p_explore, self.policy.variables),  # the policy fn
                 # (loss_p_exploit, self.policy.variables)  # the policy fn,
@@ -121,7 +124,7 @@ class OnlinePlayer(RecurrentLearner):
         A football player. Designed for HFO.
         """
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.build(n_obs=104, n_actions=13, n_hidden=32)
+        self.build(n_obs=104, n_actions=13, n_hidden=128)
 
     def build(self, n_obs, n_actions, n_hidden, width=32):
         self.n_obs = n_obs
@@ -134,10 +137,7 @@ class OnlinePlayer(RecurrentLearner):
         self.value = tf.keras.Sequential([tf.keras.layers.Dense(width, activation=tf.nn.selu),
                                           tf.keras.layers.Dense(1)], name='value')
 
-        # TODO use RNN/DNC for enc. PROBLEM how is training going to work!?
-        # will have to set a threshold on the depth?!
-        # how will this work with the batching? it wont currently...
-        # HOW CAN YOU LEARN long time scales?
+        # QUESTION HOW CAN YOU LEARN long time scales?
         # TODO Real time recurrent learning? forward AD!?
         self.encoder = tf.keras.Sequential([
             tf.keras.layers.Dense(width, activation=tf.nn.selu,
@@ -146,14 +146,19 @@ class OnlinePlayer(RecurrentLearner):
             tf.keras.layers.Reshape([width, 1]),
             # TODO verify that `stateful` works as intended
             tf.keras.layers.LSTM(width, stateful=True, activation=tf.nn.selu),
-            tf.keras.layers.Reshape([width, 1]),
-            tf.keras.layers.LSTM(width, stateful=True, activation=tf.nn.selu),
             tf.keras.layers.Reshape([width]),
             tf.keras.layers.Dense(n_hidden)
         ], name='encoder')
 
-        self.trans = tf.keras.Sequential([tf.keras.layers.Dense(width, activation=tf.nn.selu),
-                                        tf.keras.layers.Dense(n_obs + 8 + 1)], name='trans')
+        self.decoder = tf.keras.Sequential([
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(n_obs)],
+        name='decoder')
+
+        self.trans = tf.keras.Sequential([
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(n_hidden)],
+        name='trans')
 
     @utils.observation_and_action_space
     def __call__(self, obs, reward):
@@ -168,6 +173,9 @@ class OnlinePlayer(RecurrentLearner):
         Returns:
             actions (tf.tensor)
         """
+        # TODO could supply action based on old info?
+        # this would reduce latency!?
+
         h = self.encoder(tf.concat([obs, reward, self.old_action], axis=1))
 
         with tf.GradientTape() as tape:

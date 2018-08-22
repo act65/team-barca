@@ -33,6 +33,7 @@ def get_player(args):
 def main(args):
     player = get_player(args)
     env = gym.make(args.task)
+    env.render()
 
     R = [0] * args.trials
     for i in range(args.trials):

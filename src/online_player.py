@@ -2,6 +2,7 @@ import tensorflow as tf
 
 from concurrent.futures import ThreadPoolExecutor
 import functools
+import copy
 
 import utils
 
@@ -40,8 +41,9 @@ class RecurrentLearner(object):
         self.learning_rate = learning_rate
         self.opt = tf.train.AdamOptimizer(learning_rate)
 
-        self.old_obs = None
-        self.old_reward = None
+        self.old_obs = tf.zeros([1, 59])
+        self.old_reward = tf.zeros([1, 1])
+        self.action = tf.zeros([1, 8])
         self.old_action = tf.zeros([1, 8])
         self.older_action = tf.zeros([1, 8])
 
@@ -53,53 +55,58 @@ class RecurrentLearner(object):
 
         self.batch_size = 1
 
-    def get_losses(self, h, older_action, old_obs, old_reward, old_action, obs, reward, action):
+    # TODO want to write a wrapper that predict inputs and provides predicted inputs
+    # related to synthetic grads!
+    # TODO could supply action based on old info?
+    # this would reduce latency!?
+    # need a callback!? once action has been output do ...
+    # the learner running on a separate thread!?
+    # @threadpool
+    def step(self, old_obs, old_reward, a_old, obs, reward):
         """
-        Can be used with/wo eager.
+        Want to take an as soon as possible. No latency.
+        So we are going to precompute a_t based on obs_t_1
 
         Args:
-            obs_new (tf.tensor): input from t+1.
-                shape [batch, n_inputs] dtype tf.float32
-            obs_old (tf.tensor): input from t.
-                shape [batch, n_inputs] dtype tf.float32
-            reward (tf.tensor): reward recieved at t
-                shape [batch, 1] dtype tf.float32
-            action (tf.tensor): the action taken at t
-                shape [batch, n_outputs] dtype tf.float32
-
-        High level pattern.
-        - Use inputs (obs_t, r_t) to build an internal state representation.
-        - Use internal state at t to predict inputs at t+1 (obs_t+1, r_t+1).
-        - Use the learned v(s, a), t(s, a) to evaluate actions chosen
-
-        Returns:
-            (tuple): transition_loss, value_loss, policy_loss
+            ...
+            a_old: the action taken tha resulted in obs,reward
         """
-        x_old = tf.concat([old_obs, old_reward, older_action], axis=1)
-        h_old = self.encoder(x_old)
+        with tf.GradientTape() as tape:
+            x_old = tf.concat([old_obs, old_reward], axis=1)
+            h_old = self.encoder(x_old)
 
-        # need differentiable actions.
-        a_old = utils.choose_action(self.policy(h_old), self.temp)  # it bugs me that I need to recompute this
-        # HACK old_action is not differentiable so need to recalc
-        # but action is!
-        v = self.value(tf.concat([h, action], axis=1))
+            # choose action based on a prediction of the future state
+            # where a_t = trans(encoder(x))
+            h_approx = self.trans(h_old)
+            action = utils.choose_action(self.policy(h_approx), self.temp)
 
-        # OPTIMIZE implementation here. could write as simply predicting inputs!?
-        # predict inputs at t+1 given action taken
-        obs_approx = self.decoder(tf.concat([h_old, a_old], axis=1))
-        h_approx = self.trans(tf.concat([h_old, a_old], axis=1))
-        v_approx = self.value(tf.concat([h_old, a_old], axis=1))
+            x = tf.concat([obs, old_reward], axis=1)
+            h = self.encoder(x_old)
+            v = self.value(tf.concat([h, action], axis=1))
 
-        loss_d = tf.losses.mean_squared_error(obs, obs_approx)
-        loss_t = tf.losses.mean_squared_error(tf.stop_gradient(h), h_approx)
-        loss_v = tf.losses.mean_squared_error(v_approx, reward+self.discount*tf.stop_gradient(v))
+            # OPTIMIZE implementation here. could write as simply predicting inputs!?
+            # predict inputs at t+1 given action taken
+            obs_approx = self.decoder(h_old)
+            # BUG a_old, where is that coming from!?
+            v_approx = self.value(tf.concat([h_old, a_old], axis=1))
 
-        # maximise reward: use the appxoimated reward as supervision
-        loss_p_exploit = -tf.reduce_mean(v)
-        # explore: do things that result in unpredictable inputs
-        loss_p_explore = - loss_d - loss_t - loss_v
+            loss_d = tf.losses.mean_squared_error(obs, obs_approx)
+            loss_t = tf.losses.mean_squared_error(tf.stop_gradient(h), h_approx)
+            loss_v = tf.losses.mean_squared_error(v_approx, reward+self.discount*tf.stop_gradient(v))
 
-        return loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore
+            # maximise reward: use the appxoimated reward as supervision
+            loss_p_exploit = -tf.reduce_mean(v)
+            # explore: do things that result in unpredictable inputs
+            loss_p_explore = - loss_d - loss_t - loss_v
+
+        loss = self.train_step(tape, loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore)
+
+        with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+            tf.contrib.summary.histogram('a', action)
+            tf.contrib.summary.histogram('state', h)
+            tf.contrib.summary.histogram('obs', obs)
+
+        return action
 
     def train_step(self, tape, loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore):
         """
@@ -138,6 +145,7 @@ class RecurrentLearner(object):
 
         return loss_t  + loss_v + loss_p_exploit + loss_p_explore
 
+
 class OnlinePlayer(RecurrentLearner):
     def __init__(self, *args, **kwargs):
         """
@@ -161,7 +169,7 @@ class OnlinePlayer(RecurrentLearner):
         # TODO Real time recurrent learning? forward AD!?
         self.encoder = tf.keras.Sequential([
             tf.keras.layers.Dense(width, activation=tf.nn.selu,
-                                  input_shape=(n_obs + 8 + 1,),
+                                  input_shape=(n_obs + 1,),
                                   batch_size=self.batch_size),
             tf.keras.layers.Reshape([width, 1]),
             # TODO verify that `stateful` works as intended
@@ -193,87 +201,25 @@ class OnlinePlayer(RecurrentLearner):
         Returns:
             actions (tf.tensor)
         """
-
-        self.old_action = self.action.result()
+        self.older_action = self.old_action
+        if not isinstance(self.action, tf.Tensor):
+            self.old_action = self.action.result()
+        else:
+            self.old_action = self.action
 
         # DEBUG need to make sure the tensors are not mutated in place
-        self.action = self.step(self.old_obs.copy(), self.old_reward, obs, reward)
-        return self.old_action
+        # not sure how to safely loop the actions with the async fn
+        self.action = self.step(copy.deepcopy(self.old_obs),
+                                copy.deepcopy(self.old_reward),
+                                copy.deepcopy(self.older_action),
+                                copy.deepcopy(obs),
+                                copy.deepcopy(reward),
+                                )
 
-    # TODO want to write a wrapper that predict inputs and provides predicted inputs
-    # related to synthetic grads!
-    # TODO could supply action based on old info?
-    # this would reduce latency!?
-    # need a callback!? once action has been output do ...
-    # the learner running on a separate thread!?
-    @threadpool
-    def step(self, obs, reward):
-        """
-        Want to take an as soon as possible. No latency.
-        So we are going to precompute a_t based on obs_t_1
-        """
-
-        with tf.GradientTape() as tape:
-            h = self.encoder(tf.concat([obs, reward, old_action], axis=1))
-            action = utils.choose_action(self.policy(h), self.temp)
-
-
-
-            losses = self.get_losses(h, older_action, old_obs,
-                self.old_reward, self.old_action, obs, reward, action)
-        loss = self.train_step(tape, *losses)
-
-        # loop the values around for next time. could fetch from the buffer instead...
         self.old_obs = obs
         self.old_reward = reward
-        self.old_action = action
-        self.older_action = self.old_action
 
-        with tf.contrib.summary.record_summaries_every_n_global_steps(10):
-            tf.contrib.summary.histogram('a', action)
-            tf.contrib.summary.histogram('state', h)
-            tf.contrib.summary.histogram('obs', obs)
-
-        # with tf.GradientTape() as tape:
-        #     x_old = tf.concat([self.old_obs, self.old_reward, self.older_action], axis=1)
-        #     h_old = self.encoder(x_old)
-        #
-        #     # h at time t
-        #     h_approx = self.trans(tf.concat([h_old, self.old_action], axis=1))
-        #     action = utils.choose_action(self.policy(h_approx), self.temp)
-        #
-        #     v = self.value(tf.concat([h, action], axis=1))
-        #
-        #     # OPTIMIZE implementation here. could write as simply predicting inputs!?
-        #     # predict inputs at t+1 given action taken
-        #     obs_approx = self.decoder(tf.concat([h_old, a_old], axis=1))
-        #     v_approx = self.value(tf.concat([h_old, a_old], axis=1))
-        #
-        #
-        #     action = utils.choose_action(self.policy(h), self.temp)
-        #
-        #     if self.old_obs is None:
-        #         self.old_obs = obs
-        #         self.old_reward = reward
-        #         self.old_action = action
-        #         self.older_action = self.old_action
-        #
-        #     losses = self.get_losses(h, self.older_action, self.old_obs,
-        #         self.old_reward, self.old_action, obs, reward, action)
-        # loss = self.train_step(tape, *losses)
-        #
-        # # loop the values around for next time. could fetch from the buffer instead...
-        # self.old_obs = obs
-        # self.old_reward = reward
-        # self.old_action = action
-        # self.older_action = self.old_action
-        #
-        # with tf.contrib.summary.record_summaries_every_n_global_steps(10):
-        #     tf.contrib.summary.histogram('a', action)
-        #     tf.contrib.summary.histogram('state', h)
-        #     tf.contrib.summary.histogram('obs', obs)
-
-        return action
+        return self.old_action
 
 
 if __name__ == '__main__':

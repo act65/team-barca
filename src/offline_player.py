@@ -108,6 +108,7 @@ class ActorCritic(object):
         v_old = self.value(tf.concat([h_old, a], axis=1))
         v = self.value(tf.concat([h, a_new], axis=1))
 
+        # OPTIMIZE implementation here. could write as simply predicting inputs!?
         # predict inputs at t+1 given action taken
         obs_approx = self.decoder(tf.concat([h_old, a], axis=1))
         h_approx = self.trans(tf.concat([h_old, a], axis=1))

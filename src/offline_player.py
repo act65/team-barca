@@ -15,8 +15,6 @@ class ActorCritic(object):
         Args:
             pass
         """
-        # TODO reward compression
-        # TODO model based planning!?!
         self.learning_rate = learning_rate
         self.opt = tf.train.AdamOptimizer(learning_rate)
 
@@ -49,8 +47,7 @@ class ActorCritic(object):
         """
         h = self.encoder(tf.concat([obs, reward, self.old_action], axis=1))
 
-        # NOTE implemented by child class. action space will be specific to
-        # the problem
+        # WARNING implemented by child class. action space will be specific to the problem
         action = utils.choose_action(self.policy(h), self.temp)
 
         if self.old_obs is not None:
@@ -173,10 +170,14 @@ class ActorCritic(object):
         losses = list(zip(*lnvs))[0]
         variables = list(zip(*lnvs))[1]
 
+        for g, v in zip(grads, variables):
+            if g is None:
+                raise ValueError('No gradient for {}'.format(v.name))
+
         # TODO want a way to dynamically balance the training of each fn.
         # PROBLEM! quite unstable! for now, use L to weight the grads
         # tf.clip_by_norm(L*g, 1.0)
-        gnvs = [(tf.clip_by_norm(g, 1.0), v) for L, G, V in zip(losses, grads, variables) for g, v in zip(G, V)]
+        gnvs = [(tf.clip_by_norm((L**2)*g, 10.0), v) for L, G, V in zip(losses, grads, variables) for g, v in zip(G, V)]
 
         with tf.contrib.summary.record_summaries_every_n_global_steps(10):
             for g, v in gnvs:
@@ -202,10 +203,10 @@ class ActorCritic(object):
         if len(self.buffer) > self.batch_size:
             # TODO selectively choose what goes into the buffer?
             def order(x):
-                return x[-1].numpy()*np.random.random() + np.random.standard_normal()
+                return (x[-1].numpy()**2)*np.random.random() + np.random.standard_normal()
 
             inputs = list(sorted(self.buffer, key=order))
-            batch = inputs[-self.batch_size+10:] + self.buffer[-10:]  # take the most recent and some random others
+            batch = inputs[-(self.batch_size-10):] + self.buffer[-10:]  # take the most recent and some random others
             batch = [tf.concat(val, axis=0) for val in zip(*batch)]
             loss = self.train_step(batch)
             self.buffer = self.buffer[1:]
@@ -221,7 +222,7 @@ class OfflinePlayer(ActorCritic):
         A football player. Designed for HFO.
         """
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.build(n_obs=59, n_actions=13, n_hidden=32)
+        self.build(n_obs=59, n_actions=13, n_hidden=128)
 
     def build(self, n_obs, n_actions, n_hidden, width=64):
         self.n_obs = n_obs

@@ -1,5 +1,21 @@
 import tensorflow as tf
+
+from concurrent.futures import ThreadPoolExecutor
+import functools
+
 import utils
+
+
+
+_DEFAULT_POOL = ThreadPoolExecutor()
+
+def threadpool(f, executor=None):
+    # from bj0 on SE
+    # https://stackoverflow.com/questions/6893968/how-to-get-the-return-value-from-a-thread-in-python
+    @functools.wraps(f)
+    def wrap(*args, **kwargs):
+        return (executor or _DEFAULT_POOL).submit(f, *args, **kwargs)
+    return wrap
 
 class RecurrentLearner(object):
     """
@@ -100,13 +116,17 @@ class RecurrentLearner(object):
         lnvs = [(loss_d, self.encoder.variables + self.decoder.variables),  # the decoder fn
                 (loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
                 (loss_v, self.encoder.variables + self.value.variables),  # the value fn
-                (loss_p_explore, self.policy.variables),  # the policy fn
-                # (loss_p_exploit, self.policy.variables)  # the policy fn,
+                # (loss_p_explore, self.policy.variables),  # the policy fn
+                (loss_p_exploit, self.policy.variables)  # the policy fn,
                 ]
 
         grads = tape.gradient(*zip(*lnvs))
         losses = list(zip(*lnvs))[0]
         variables = list(zip(*lnvs))[1]
+
+        for g, v in zip(grads, variables):
+            if g is None:
+                raise ValueError('No gradient for {}'.format(v.name))
 
         gnvs = [(tf.clip_by_norm((L**2)*g, 10.0), v) for L, G, V in zip(losses, grads, variables) for g, v in zip(G, V)]
 
@@ -124,7 +144,7 @@ class OnlinePlayer(RecurrentLearner):
         A football player. Designed for HFO.
         """
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.build(n_obs=104, n_actions=13, n_hidden=128)
+        self.build(n_obs=59, n_actions=13, n_hidden=64)
 
     def build(self, n_obs, n_actions, n_hidden, width=32):
         self.n_obs = n_obs
@@ -173,21 +193,33 @@ class OnlinePlayer(RecurrentLearner):
         Returns:
             actions (tf.tensor)
         """
-        # TODO could supply action based on old info?
-        # this would reduce latency!?
 
-        h = self.encoder(tf.concat([obs, reward, self.old_action], axis=1))
+        self.old_action = self.action.result()
+
+        # DEBUG need to make sure the tensors are not mutated in place
+        self.action = self.step(self.old_obs.copy(), self.old_reward, obs, reward)
+        return self.old_action
+
+    # TODO want to write a wrapper that predict inputs and provides predicted inputs
+    # related to synthetic grads!
+    # TODO could supply action based on old info?
+    # this would reduce latency!?
+    # need a callback!? once action has been output do ...
+    # the learner running on a separate thread!?
+    @threadpool
+    def step(self, obs, reward):
+        """
+        Want to take an as soon as possible. No latency.
+        So we are going to precompute a_t based on obs_t_1
+        """
 
         with tf.GradientTape() as tape:
+            h = self.encoder(tf.concat([obs, reward, old_action], axis=1))
             action = utils.choose_action(self.policy(h), self.temp)
 
-            if self.old_obs is None:
-                self.old_obs = obs
-                self.old_reward = reward
-                self.old_action = action
-                self.older_action = self.old_action
 
-            losses = self.get_losses(h, self.older_action, self.old_obs,
+
+            losses = self.get_losses(h, older_action, old_obs,
                 self.old_reward, self.old_action, obs, reward, action)
         loss = self.train_step(tape, *losses)
 
@@ -202,7 +234,47 @@ class OnlinePlayer(RecurrentLearner):
             tf.contrib.summary.histogram('state', h)
             tf.contrib.summary.histogram('obs', obs)
 
+        # with tf.GradientTape() as tape:
+        #     x_old = tf.concat([self.old_obs, self.old_reward, self.older_action], axis=1)
+        #     h_old = self.encoder(x_old)
+        #
+        #     # h at time t
+        #     h_approx = self.trans(tf.concat([h_old, self.old_action], axis=1))
+        #     action = utils.choose_action(self.policy(h_approx), self.temp)
+        #
+        #     v = self.value(tf.concat([h, action], axis=1))
+        #
+        #     # OPTIMIZE implementation here. could write as simply predicting inputs!?
+        #     # predict inputs at t+1 given action taken
+        #     obs_approx = self.decoder(tf.concat([h_old, a_old], axis=1))
+        #     v_approx = self.value(tf.concat([h_old, a_old], axis=1))
+        #
+        #
+        #     action = utils.choose_action(self.policy(h), self.temp)
+        #
+        #     if self.old_obs is None:
+        #         self.old_obs = obs
+        #         self.old_reward = reward
+        #         self.old_action = action
+        #         self.older_action = self.old_action
+        #
+        #     losses = self.get_losses(h, self.older_action, self.old_obs,
+        #         self.old_reward, self.old_action, obs, reward, action)
+        # loss = self.train_step(tape, *losses)
+        #
+        # # loop the values around for next time. could fetch from the buffer instead...
+        # self.old_obs = obs
+        # self.old_reward = reward
+        # self.old_action = action
+        # self.older_action = self.old_action
+        #
+        # with tf.contrib.summary.record_summaries_every_n_global_steps(10):
+        #     tf.contrib.summary.histogram('a', action)
+        #     tf.contrib.summary.histogram('state', h)
+        #     tf.contrib.summary.histogram('obs', obs)
+
         return action
+
 
 if __name__ == '__main__':
     tf.enable_eager_execution()

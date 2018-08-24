@@ -6,8 +6,6 @@ import copy
 
 import utils
 
-
-
 _DEFAULT_POOL = ThreadPoolExecutor()
 
 def threadpool(f, executor=None):

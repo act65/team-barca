@@ -14,3 +14,11 @@ Software tools
 
 - Evaluation
 - Distributed computation
+
+## Reward
+
+Want to add;
+
+- latency (or play in a real time fashion)
+- computational resources used
+- ?

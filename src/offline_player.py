@@ -33,6 +33,39 @@ class ActorCritic(object):
         self.buffer_size = buffer_size
         self.batch_size = batch_size
 
+        self.build(n_obs=59, n_actions=13, n_hidden=128)
+
+    def build(self, n_obs, n_actions, n_hidden, width=64):
+        self.n_obs = n_obs
+        self.n_actions = n_actions
+        self.n_hidden = n_hidden
+
+        self.policy = tf.keras.Sequential([tf.keras.layers.Dense(width, activation=tf.nn.selu),
+                                           tf.keras.layers.Dense(n_actions)], name='policy')
+
+        self.value = tf.keras.Sequential([tf.keras.layers.Dense(width, activation=tf.nn.selu),
+                                          tf.keras.layers.Dense(1)], name='value')
+
+        # TODO use RNN/DNC for enc. PROBLEM how is training going to work!?
+        # will have to set a threshold on the depth?!
+        # how will this work with the batching? it wont currently...
+        self.encoder = tf.keras.Sequential([
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(n_hidden)
+        ], name='encoder')
+
+        self.decoder = tf.keras.Sequential([
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(n_obs)],
+        name='decoder')
+
+        self.trans = tf.keras.Sequential([
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(n_hidden)],
+        name='trans')
+
     def step(self, obs, reward):
         """
         Step. Given a new observation and reward choose and action and add the
@@ -223,38 +256,6 @@ class OfflinePlayer(ActorCritic):
         A football player. Designed for HFO.
         """
         super(self.__class__, self).__init__(*args, **kwargs)
-        self.build(n_obs=59, n_actions=13, n_hidden=128)
-
-    def build(self, n_obs, n_actions, n_hidden, width=64):
-        self.n_obs = n_obs
-        self.n_actions = n_actions
-        self.n_hidden = n_hidden
-
-        self.policy = tf.keras.Sequential([tf.keras.layers.Dense(width, activation=tf.nn.selu),
-                                           tf.keras.layers.Dense(n_actions)], name='policy')
-
-        self.value = tf.keras.Sequential([tf.keras.layers.Dense(width, activation=tf.nn.selu),
-                                          tf.keras.layers.Dense(1)], name='value')
-
-        # TODO use RNN/DNC for enc. PROBLEM how is training going to work!?
-        # will have to set a threshold on the depth?!
-        # how will this work with the batching? it wont currently...
-        self.encoder = tf.keras.Sequential([
-            tf.keras.layers.Dense(width, activation=tf.nn.selu),
-            tf.keras.layers.Dense(width, activation=tf.nn.selu),
-            tf.keras.layers.Dense(width, activation=tf.nn.selu),
-            tf.keras.layers.Dense(n_hidden)
-        ], name='encoder')
-
-        self.decoder = tf.keras.Sequential([
-            tf.keras.layers.Dense(width, activation=tf.nn.selu),
-            tf.keras.layers.Dense(n_obs)],
-        name='decoder')
-
-        self.trans = tf.keras.Sequential([
-            tf.keras.layers.Dense(width, activation=tf.nn.selu),
-            tf.keras.layers.Dense(n_hidden)],
-        name='trans')
 
     @utils.observation_and_action_space
     def __call__(self, obs, r):

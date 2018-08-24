@@ -56,7 +56,7 @@ def choose_action(logits, temp):
     gumbel = tfp.distributions.RelaxedOneHotCategorical(temp, logits=dis_vars)
 
     # cts variables
-    n = 5 # tf.shape()
+    n = cts_vars.get_shape().as_list()[-1]//2
     normal = tfp.distributions.MultivariateNormalDiag(loc=cts_vars[:,:n], scale_diag=cts_vars[:,n:]**2)
     # TODO if this was a mixture of gaussians then explore/exploit might make more sense?!
 

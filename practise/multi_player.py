@@ -74,10 +74,10 @@ class Node():
         self.global_step = tf.train.get_or_create_global_step()
 
         self.summaries = tf.summary.merge([
-            tf.summary.scalar('loss_d', loss_d)
-            tf.summary.scalar('loss_t', loss_t)
-            tf.summary.scalar('loss_v', loss_v)
-            tf.summary.scalar('loss_p_exploit', loss_p_exploit)
+            tf.summary.scalar('loss_d', loss_d),
+            tf.summary.scalar('loss_t', loss_t),
+            tf.summary.scalar('loss_v', loss_v),
+            tf.summary.scalar('loss_p_exploit', loss_p_exploit),
             tf.summary.scalar('loss_p_explore', loss_p_explore)
         ])
 

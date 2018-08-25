@@ -40,10 +40,10 @@ class GymEnvironment():
 def main(args):
     ray.init()
     Node = ray.remote(offline_learner.ActorCritic)
-    player1 = Node.remote(59, 32, logdir=args.logdir+'/1')
-    player2 = Node.remote(32, 8, logdir=args.logdir+'/2')
-    player3 = Node.remote(64, 64, logdir=args.logdir+'/3')
-    player4 = Node.remote(32, 32, logdir=args.logdir+'/4')
+    player1 = Node.remote(59, 32, logdir=args.logdir+'/1', learning_rate=0.0001)
+    player2 = Node.remote(32, 8, logdir=args.logdir+'/2', learning_rate=0.0001)
+    player3 = Node.remote(64, 64, logdir=args.logdir+'/3', learning_rate=0.0001)
+    player4 = Node.remote(32, 32, logdir=args.logdir+'/4', learning_rate=0.0001)
 
     env = GymEnvironment(args.task)
     env.render()

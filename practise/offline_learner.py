@@ -1,13 +1,15 @@
 import tensorflow as tf
 import numpy as np
 import practise.utils as utils
+import practise.ams_grad as opt
 
 class ActorCritic():
-    def __init__(self, n_obs, n_actions, n_hidden=32, width=32, logdir='/tmp/test/0',
-                 buffer_size=5000, batch_size=128, learning_rate=0.0001,
+    def __init__(self, n_obs, n_actions, n_hidden=64, width=32, logdir='/tmp/test/0',
+                 buffer_size=5000, batch_size=256, learning_rate=0.0001,
                  temp=100.0, discount=0.9):
         self.learning_rate = learning_rate
-        self.opt = tf.train.AdamOptimizer(learning_rate)
+        # self.opt = tf.train.AdamOptimizer(learning_rate)
+        self.opt = opt.AMSGrad(learning_rate)
 
         self.old_obs = np.zeros([1, n_obs])
         self.old_reward = np.zeros([1, 1])
@@ -43,8 +45,8 @@ class ActorCritic():
         # will have to set a threshold on the depth?!
         # how will this work with the batching? it wont currently...
         self.encoder = tf.keras.Sequential([
-            tf.keras.layers.Dense(width, activation=tf.nn.selu),
-            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(2*width, activation=tf.nn.selu),
+            # tf.keras.layers.Dense(width, activation=tf.nn.selu),
             tf.keras.layers.Dense(width, activation=tf.nn.selu),
             tf.keras.layers.Dense(n_hidden)
         ], name='encoder')
@@ -71,6 +73,7 @@ class ActorCritic():
             ]
         self.losses = self.get_losses(*self.episode_feed)
         loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore = self.losses
+        self.loss = loss_d + loss_t + loss_v + loss_p_exploit + loss_p_explore
         self.global_step = tf.train.get_or_create_global_step()
 
         self.obs = tf.placeholder(shape=[None, self.n_obs], dtype=tf.float32)
@@ -78,7 +81,7 @@ class ActorCritic():
         self.h = self.encoder(tf.concat([self.obs, self.r, self.old_action], axis=1))
         self.action = utils.choose_action(self.policy(self.h), self.temp)
 
-        loss_p = loss_p_exploit # loss_p_explore if global_step < 5000 else loss_p_exploit
+        loss_p = loss_p_exploit + loss_p_explore
         lnvs = [(loss_d, self.encoder.variables + self.decoder.variables),  # the decoder fn
                 (loss_t, self.encoder.variables + self.trans.variables),  # the transition fn
                 (loss_v, self.encoder.variables + self.value.variables),  # the value fn
@@ -86,7 +89,7 @@ class ActorCritic():
                 ]
 
         gnvs = [self.opt.compute_gradients(l, var_list=v) for l, v in lnvs]
-        gnvs = [(g, v) for X in gnvs for g, v in X]
+        gnvs = [(tf.clip_by_norm(g, 1.0), v) for X in gnvs for g, v in X]
 
         self.summaries = tf.summary.merge([
             tf.summary.scalar('loss_d', loss_d),
@@ -94,6 +97,7 @@ class ActorCritic():
             tf.summary.scalar('loss_v', loss_v),
             tf.summary.scalar('loss_p_exploit', loss_p_exploit),
             tf.summary.scalar('loss_p_explore', loss_p_explore),
+            tf.summary.scalar('loss', self.loss),
             # tf.summary.histogram('action', self.action),
         ])
 
@@ -146,14 +150,14 @@ class ActorCritic():
         obs_approx = self.decoder(tf.concat([h_old, a], axis=1))
         h_approx = self.trans(tf.concat([h_old, a], axis=1))
 
-        loss_d = tf.losses.mean_squared_error(obs, obs_approx)
+        loss_d = 0.1*tf.losses.mean_squared_error(obs, obs_approx)
         loss_t = tf.losses.mean_squared_error(tf.stop_gradient(h), h_approx)
-        loss_v = tf.losses.mean_squared_error(v_old, reward+self.discount*tf.stop_gradient(v))
+        loss_v = 10.0*tf.losses.mean_squared_error(v_old, reward+self.discount*tf.stop_gradient(v))
 
         # maximise reward: use the approximated q/expected reward as supervision
         loss_p_exploit = -tf.reduce_mean(v)
         # explore: do things that result in unpredictable outcomes
-        loss_p_explore = - loss_d - loss_t - loss_v
+        loss_p_explore = - loss_d - loss_t # - loss_v
         # NOTE no gradients propagate back throughthe policy to the enc.
         # good or bad? good. the losses are just the inverses so good?
         # NOTE not sure it makes sense to train the same fn on both loss_p_explore
@@ -162,9 +166,10 @@ class ActorCritic():
         return loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore
 
     def run_train_step(self, episode):
-        _, summ, i = self.sess.run([self.train_step, self.summaries, self.global_step],
+        _, summ, i, L = self.sess.run([self.train_step, self.summaries, self.global_step, self.loss],
                                    feed_dict=dict(zip(self.episode_feed, episode)))
         self.writer.add_summary(summ, i)
+        return L
 
     def run_step(self, obs, r):
         return self.sess.run(self.action, feed_dict={self.obs: obs, self.r: r})
@@ -185,7 +190,7 @@ class ActorCritic():
         if len(self.buffer) > self.batch_size:
             # TODO selectively choose what goes into the buffer?
             def order(x):
-                return (x[-1]**2)*np.random.random() + np.random.standard_normal()
+                return np.random.standard_normal()
 
             inputs = list(sorted(self.buffer, key=order))
             batch = inputs[-(self.batch_size-10):] + self.buffer[-10:]  # take the most recent and some random others

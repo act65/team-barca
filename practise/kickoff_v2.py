@@ -40,30 +40,41 @@ class GymEnvironment():
 def main(args):
     ray.init()
     Node = ray.remote(offline_learner.ActorCritic)
-    player1 = Node.remote(59, 32, logdir=args.logdir+'/1', learning_rate=0.0001)
-    player2 = Node.remote(32, 8, logdir=args.logdir+'/2', learning_rate=0.0001)
-    player3 = Node.remote(64, 64, logdir=args.logdir+'/3', learning_rate=0.0001)
-    player4 = Node.remote(32, 32, logdir=args.logdir+'/4', learning_rate=0.0001)
+
+    # player1 = Node.remote(59, 32, logdir=args.logdir+'/1', learning_rate=0.0001)
+    # player2 = Node.remote(32, 8, logdir=args.logdir+'/2', learning_rate=0.0001)
+    # player3 = Node.remote(64, 64, logdir=args.logdir+'/3', learning_rate=0.0001)
+    # player4 = Node.remote(32, 32, logdir=args.logdir+'/4', learning_rate=0.0001)
+
+    # old_o1 = np.zeros([1, 32])
+    # old_o3 = np.zeros([1, 64])
+    # old_o4 = np.zeros([1, 32])
+
+    player1 = Node.remote(59, 8, logdir=args.logdir, learning_rate=0.001, batch_size=512, width=64, n_hidden=64)
 
     env = GymEnvironment(args.task)
     env.render()
 
     observation = env.reset(); reward = 0
-    old_o1 = np.zeros([1, 32])
-    old_o3 = np.zeros([1, 64])
-    old_o4 = np.zeros([1, 32])
+
     for _ in range(args.max_iters):
         # NB should only have to get the action. the rest can be done elsewhere
+        # o1 = ray.get(player1.call.remote(observation, reward))
+        # o3 = ray.get(player3.call.remote(np.hstack([o1, old_o4]), reward))
+        # action = ray.get(player2.call.remote(o3[:, :32], reward))
+        # o4 = ray.get(player4.call.remote(o3[:, 32:], reward))
+        #
+        # old_o1 = o1
+        # old_o3 = o3
+        # old_o4 = o4
+        #
+        # observation, reward = env.step(action)
+
+
         o1 = ray.get(player1.call.remote(observation, reward))
-        o3 = ray.get(player3.call.remote(np.hstack([o1, old_o4]), reward))
-        action = ray.get(player2.call.remote(o3[:, :32], reward))
-        o4 = ray.get(player4.call.remote(o3[:, 32:], reward))
+        observation, reward = env.step(o1)
 
-        old_o1 = o1
-        old_o3 = o3
-        old_o4 = o4
 
-        observation, reward = env.step(action)
 
 if __name__ == '__main__':
     main(argumentparser())

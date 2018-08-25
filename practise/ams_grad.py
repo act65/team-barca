@@ -1,4 +1,7 @@
-"""AMSGrad for TensorFlow."""
+"""
+AMSGrad for TensorFlow.
+https://github.com/taki0112/AMSGrad-Tensorflow
+"""
 import numpy as np
 import tensorflow as tf
 

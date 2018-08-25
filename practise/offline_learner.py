@@ -1,15 +1,17 @@
 import tensorflow as tf
 import numpy as np
+import copy
+
 import practise.utils as utils
 import practise.ams_grad as opt
 
 class ActorCritic():
     def __init__(self, n_obs, n_actions, n_hidden=64, width=32, logdir='/tmp/test/0',
-                 buffer_size=5000, batch_size=256, learning_rate=0.0001,
-                 temp=100.0, discount=0.9):
+                 buffer_size=5000, batch_size=64, learning_rate=0.0001,
+                 temp=10.0, discount=0.9):
         self.learning_rate = learning_rate
-        # self.opt = tf.train.AdamOptimizer(learning_rate)
-        self.opt = opt.AMSGrad(learning_rate)
+        self.opt = tf.train.AdamOptimizer(learning_rate)
+        # self.opt = opt.AMSGrad(learning_rate)
 
         self.old_obs = np.zeros([1, n_obs])
         self.old_reward = np.zeros([1, 1])
@@ -45,8 +47,8 @@ class ActorCritic():
         # will have to set a threshold on the depth?!
         # how will this work with the batching? it wont currently...
         self.encoder = tf.keras.Sequential([
-            tf.keras.layers.Dense(2*width, activation=tf.nn.selu),
-            # tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
+            tf.keras.layers.Dense(width, activation=tf.nn.selu),
             tf.keras.layers.Dense(width, activation=tf.nn.selu),
             tf.keras.layers.Dense(n_hidden)
         ], name='encoder')
@@ -64,13 +66,15 @@ class ActorCritic():
     def construct_graph(self):
         # older_action, old_obs, old_reward, old_action, obs, reward
         self.episode_feed = [
-            tf.placeholder(shape=[None, self.n_actions], dtype=tf.float32, name='old_a'),
+            tf.placeholder(shape=[None, self.n_actions], dtype=tf.float32, name='older_a'),
             tf.placeholder(shape=[None, self.n_obs], dtype=tf.float32, name='old_obs'),
             tf.placeholder(shape=[None, 1], dtype=tf.float32, name='old_r'),
-            tf.placeholder(shape=[None, self.n_actions], dtype=tf.float32, name='a'),
+            tf.placeholder(shape=[None, self.n_actions], dtype=tf.float32, name='old_a'),
             tf.placeholder(shape=[None, self.n_obs], dtype=tf.float32, name='obs'),
             tf.placeholder(shape=[None, 1], dtype=tf.float32, name='r'),
+            tf.placeholder(shape=[None, self.n_actions], dtype=tf.float32, name='a'),
             ]
+
         self.losses = self.get_losses(*self.episode_feed)
         loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore = self.losses
         self.loss = loss_d + loss_t + loss_v + loss_p_exploit + loss_p_explore
@@ -91,6 +95,9 @@ class ActorCritic():
         gnvs = [self.opt.compute_gradients(l, var_list=v) for l, v in lnvs]
         gnvs = [(tf.clip_by_norm(g, 1.0), v) for X in gnvs for g, v in X]
 
+        self.R = tf.Variable(tf.zeros(shape=[], dtype=tf.float32), trainable=False)
+        self.update_op = tf.assign(self.R, 0.9*self.R + tf.reduce_mean(self.episode_feed[-2][:, -10:]))
+
         self.summaries = tf.summary.merge([
             tf.summary.scalar('loss_d', loss_d),
             tf.summary.scalar('loss_t', loss_t),
@@ -98,12 +105,14 @@ class ActorCritic():
             tf.summary.scalar('loss_p_exploit', loss_p_exploit),
             tf.summary.scalar('loss_p_explore', loss_p_explore),
             tf.summary.scalar('loss', self.loss),
+            tf.summary.scalar('R', self.R)
             # tf.summary.histogram('action', self.action),
         ])
 
         self.train_step = self.opt.apply_gradients(gnvs, global_step=self.global_step)
+        self.train_step = tf.group(*[self.train_step, self.update_op])
 
-    def get_losses(self, older_action, old_obs, old_reward, old_action, obs, reward):
+    def get_losses(self, older_action, old_obs, old_reward, old_action, obs, reward, action, method='meta_critic'):
         """
         Can be used with/wo eager.
 
@@ -125,43 +134,68 @@ class ActorCritic():
         Returns:
             (tuple): transition_loss, value_loss, policy_loss
         """
-        # TODO would like to see a graph of this part. just for sanity
-
         # TODO want enc to be recurrent and recieve;
         # the old action taken and the old reward recieved
-        x_old = tf.concat([old_obs, old_reward, older_action], axis=1)
+        x_old = tf.concat([older_action, old_obs, old_reward], axis=1)
         h_old = self.encoder(x_old)
-        x = tf.concat([obs, reward, old_action], axis=1)
+        x = tf.concat([old_action, obs, reward], axis=1)
         h = self.encoder(x)
 
-        # need differentiable actions.
-        a = utils.choose_action(self.policy(h_old), self.temp)  # it bugs me that I need to recompute this
-        a_new = utils.choose_action(self.policy(h), self.temp)
-        # NOTE PROBLEM. old_action is not differentiable so cannot get
-        # grads to the true action chosen. instead of old_action use a
-        # should work out in expectation, but will just be slower learning for now
-        # solution is ??? online learning, partial evaluation, predict given the dist
-
-        v_old = self.value(tf.concat([h_old, a], axis=1))
-        v = self.value(tf.concat([h, a_new], axis=1))
-
+        ### Predict inputs and changes
         # OPTIMIZE implementation here. could write as simply predicting inputs!?
         # predict inputs at t+1 given action taken
-        obs_approx = self.decoder(tf.concat([h_old, a], axis=1))
-        h_approx = self.trans(tf.concat([h_old, a], axis=1))
+        obs_approx = self.decoder(tf.concat([h_old, old_action], axis=1))
+        h_approx = self.trans(tf.concat([h_old, old_action], axis=1))
 
-        loss_d = 0.1*tf.losses.mean_squared_error(obs, obs_approx)
+        if method == "meta_critic":
+            ### Meta critic
+            # maximise reward: use the approximated q/expected reward as supervision
+
+            # need differentiable actions.
+            # TODO is this what DICE is for!? need to do some reading
+            # NOTE BUG FIXME PROBLEM. action is not differentiable so cannot get
+            # grads to the true action chosen. instead of action use a
+            # should work out in expectation, but will just be slower learning for now
+            # solution is ??? online learning, partial evaluation, predict given the dist
+            def mc_sample(x, n_samples=16):
+                gumbel, normal = utils.get_dist(self.policy(x), self.temp)
+
+                a = tf.reshape(tf.concat([gumbel.sample(n_samples),
+                                              normal.sample(n_samples)], axis=-1),
+                                   [tf.shape(x)[0]*n_samples, self.n_actions])
+
+                stacked_x = tf.reshape(tf.concat([x for _ in range(n_samples)], axis=0), [tf.shape(x)[0]*n_samples, self.n_hidden])
+                v = self.value(tf.concat([stacked_x, a], axis=1))
+                return tf.reduce_mean(tf.reshape(v, [n_samples, tf.shape(x)[0], 1]), axis=0)
+
+            v_old = mc_sample(h_old)
+            v = mc_sample(h)
+
+            loss_p_exploit = -tf.reduce_mean(v_old)
+
+        elif method is "a2c":
+            ### Advantage actor critic
+            v_old = self.value(h_old)
+            v = self.value(h)
+
+            # BUG keep getting Nans...
+            a_gumbel, a_normal = utils.get_dist(self.policy(h_old), self.temp)
+            advantage = (reward+self.discount*tf.stop_gradient(v)) - v_old
+            prob = a_gumbel.log_prob(old_action[:,:3]) + a_normal.log_prob(old_action[:,3:])
+            prob = tf.where(tf.is_nan(prob), tf.zeros_like(prob), prob)
+            loss_p_exploit = tf.reduce_mean(-prob * advantage)
+
+        else:
+            raise ValueError('Acceptable methods are a2c and meta_critic')
+
+        loss_d = tf.losses.mean_squared_error(obs, obs_approx)
         loss_t = tf.losses.mean_squared_error(tf.stop_gradient(h), h_approx)
-        loss_v = 10.0*tf.losses.mean_squared_error(v_old, reward+self.discount*tf.stop_gradient(v))
+        loss_v = tf.losses.mean_squared_error(v_old, reward+self.discount*tf.stop_gradient(v))
 
-        # maximise reward: use the approximated q/expected reward as supervision
-        loss_p_exploit = -tf.reduce_mean(v)
-        # explore: do things that result in unpredictable outcomes
+        ### Explore: do things that result in unpredictable outcomes
         loss_p_explore = - loss_d - loss_t # - loss_v
         # NOTE no gradients propagate back throughthe policy to the enc.
         # good or bad? good. the losses are just the inverses so good?
-        # NOTE not sure it makes sense to train the same fn on both loss_p_explore
-        # and loss_p_exploit???
 
         return loss_d, loss_t, loss_v, loss_p_exploit, loss_p_explore
 
@@ -211,7 +245,15 @@ class ActorCritic():
         self.offline_update()
 
         if self.old_obs is not None:
-            self.buffer.append([self.older_action, self.old_obs, self.old_reward, self.old_action, obs, reward])
+            self.buffer.append([
+                copy.deepcopy(self.older_action),
+                copy.deepcopy(self.old_obs),
+                copy.deepcopy(self.old_reward),
+                copy.deepcopy(self.old_action),
+                copy.deepcopy(obs),
+                copy.deepcopy(reward),
+                copy.deepcopy(action)
+                ])
 
         # loop the values around for next time. could fetch from the buffer instead...
         self.old_obs = obs

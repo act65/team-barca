@@ -43,6 +43,18 @@ def choose_action(logits, temp):
             shape [batch, n_hidden] dtype tf.float32
 
     Returns:
+        tf.tensor
+    """
+    gumbel, normal = get_dist(logits, temp)
+    return tf.concat([gumbel.sample(), normal.sample()], axis=1)
+
+def get_dist(logits, temp):
+    """
+    Args:
+        logits (tf.tensor): the hidden state at t
+            shape [batch, n_hidden] dtype tf.float32
+
+    Returns:
         gumbel (tfp.distribution): the distribution over discrete variables
         normal (tfp.distribution): the distribution over cts variables
     """
@@ -60,7 +72,9 @@ def choose_action(logits, temp):
     normal = tfp.distributions.MultivariateNormalDiag(loc=cts_vars[:,:n], scale_diag=cts_vars[:,n:]**2)
     # TODO if this was a mixture of gaussians then explore/exploit might make more sense?!
 
-    return tf.concat([gumbel.sample(), normal.sample()], axis=1)
+    return gumbel, normal
+
+
 
 
 if __name__ == '__main__':
